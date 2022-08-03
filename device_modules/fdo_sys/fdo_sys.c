@@ -18,6 +18,8 @@ static fdow_t *fdow = NULL;
 
 // filename that will either be read from or written onto
 static char filename[FILE_NAME_LEN];
+// service info key that will be used as key on service info map on owner service
+static char svi_map_key[SVI_MAP_KEY_LEN];
 // position/offset on the file from which data will be read
 static size_t file_seek_pos = 0;
 // size of the file from which data will be read
@@ -27,12 +29,17 @@ static int fetch_data_status = 1;
 // Number of items in the exec/exec_cb array
 // used to perform clean-up on memory allocated for exec/exec_cb instructions
 static size_t exec_array_length = 0;
+// Number of items in the fetch array
+// used to perform clean-up on memory allocated for fetch instructions
+static size_t fetch_array_length = 0;
 // status_cb isComplete value
 static bool status_cb_iscomplete = false;
 //  status_cb resultCode value
 static int status_cb_resultcode = -1;
 // status_cb waitSec value
 static uint64_t status_cb_waitsec = -1;
+// exec_result to store command execution output
+static char exec_result[EXEC_RESULT_LEN];
 // local hasMore flag that represents whether the module has data/response to send NOW
 // 'true' if there is data to send, 'false' otherwise
 static bool hasmore = false;
@@ -63,9 +70,12 @@ int fdo_sys(fdo_sdk_si_type type,
 	uint8_t *bin_data = NULL;
 	size_t bin_len = 0;
 	size_t exec_array_index = 0;
+	size_t fetch_array_index = 0;
 	size_t status_cb_array_length = 0;
 	char **exec_instr = NULL;
+	char **fetch_instr = NULL;
 	size_t exec_instructions_sz = 0;
+	size_t fetch_instructions_sz = 0;
 	size_t file_remaining = 0;
 	size_t temp_module_val_sz = 0;
 
@@ -96,7 +106,7 @@ int fdo_sys(fdo_sdk_si_type type,
 		case FDO_SI_FAILURE:
 			// perform clean-ups as needed
 			if (!process_data(FDO_SYS_MOD_MSG_EXIT, NULL, 0, NULL,
-				NULL, NULL, NULL, NULL)) {
+				NULL, NULL, NULL, NULL, NULL)) {
 #ifdef DEBUG_LOGS
 				printf("Module fdo_sys - Failed to perform clean-up operations\n");
 #endif
@@ -456,7 +466,7 @@ int fdo_sys(fdo_sdk_si_type type,
 			}
 
 			if (!process_data(FDO_SYS_MOD_MSG_WRITE, bin_data, bin_len, filename,
-				NULL, NULL, NULL, NULL)) {
+				NULL, NULL, NULL, NULL, NULL)) {
 #ifdef DEBUG_LOGS
 				printf("Module fdo_sys - Failed to process value for fdo_sys:write\n");
 #endif
@@ -548,19 +558,39 @@ int fdo_sys(fdo_sdk_si_type type,
 						goto end;
 					}
 				}
+
+				// last argument is SVI map key
+				if (exec_array_index == exec_array_length-1) {
+					if (memset_s(svi_map_key, SVI_MAP_KEY_LEN, 0) != 0) {
+#ifdef DEBUG_LOGS
+						printf("Module fdo_sys - Failed to clear filename for"
+							" fdo_sys:exec/exec_cb\n");
+#endif
+						goto end;
+					}
+
+					if (0 != strncpy_s(svi_map_key, SVI_MAP_KEY_LEN,
+						exec_instr[exec_array_index], exec_instructions_sz)) {
+		#ifdef DEBUG_LOGS
+						printf("Module fdo_sys - Failed to copy svi map key for"
+							" fdo_sys:exec/exec_cb\n");
+		#endif
+						goto end;
+					}
+				}
 			}
 			exec_instr[exec_array_index] = NULL;
 
 			if (!fdor_end_array(fdor)) {
 #ifdef DEBUG_LOGS
-				printf("Module fdo_sys - Failed to start fdo_sys:exec/exec_cb array\n");
+				printf("Module fdo_sys - Failed to close fdo_sys:exec/exec_cb array\n");
 #endif
 				goto end;
 			}
 
 			if (strcmp_exec == 0) {
 				if (!process_data(FDO_SYS_MOD_MSG_EXEC, NULL, 0, filename,
-					exec_instr, NULL, NULL, NULL)) {
+					exec_instr, NULL, NULL, NULL, NULL)) {
 #ifdef DEBUG_LOGS
 					printf("Module fdo_sys - Failed to process fdo_sys:exec\n");
 #endif
@@ -569,13 +599,14 @@ int fdo_sys(fdo_sdk_si_type type,
 			} else if (strcmp_execcb == 0) {
 				if (!process_data(FDO_SYS_MOD_MSG_EXEC_CB, NULL, 0, filename,
 					exec_instr, &status_cb_iscomplete, &status_cb_resultcode,
-					&status_cb_waitsec)) {
+					&status_cb_waitsec, exec_result)) {
 #ifdef DEBUG_LOGS
 					printf("Module fdo_sys - Failed to process fdo_sys:exec_cb\n");
 #endif
 					goto end;
 				}
 
+				printf("\n\n RETURNED AFTER EXEC_CB ....... \n\n");
 				// respond with initial fdo_sys:status_cb message
 				hasmore = true;
 				write_type = FDO_SYS_MOD_MSG_STATUS_CB;
@@ -648,7 +679,7 @@ int fdo_sys(fdo_sdk_si_type type,
 #endif
 
 			if (!process_data(FDO_SYS_MOD_MSG_STATUS_CB, bin_data, bin_len, NULL,
-				NULL, &status_cb_iscomplete, &status_cb_resultcode, &status_cb_waitsec)) {
+				NULL, &status_cb_iscomplete, &status_cb_resultcode, &status_cb_waitsec, NULL)) {
 #ifdef DEBUG_LOGS
 				printf("Module fdo_sys - Failed to process fdo_sys:status_cb\n");
 #endif
@@ -659,40 +690,110 @@ int fdo_sys(fdo_sdk_si_type type,
 			goto end;
 
 		} else if (strcmp_fetch == 0) {
-			if (!fdor_string_length(fdor, &bin_len) ) {
+			// ======================== new changes for fetch ==============================
+
+			if (!fdor_array_length(fdor, &fetch_array_length)) {
 #ifdef DEBUG_LOGS
-				printf("Module fdo_sys - Failed to read fdo_sys:fetch length\n");
+				printf("Module fdo_sys - Failed to read fdo_sys:fetch array length\n");
 #endif
 				goto end;
 			}
 
-			if (bin_len == 0) {
+			if (fetch_array_length == 0) {
 #ifdef DEBUG_LOGS
-				printf("Module fdo_sys - Empty value received for fdo_sys:fetch\n");
+				printf("Module fdo_sys - Empty array received for fdo_sys:fetch\n");
 #endif
-				// received file name to be read cannot be empty
-				// do not allocate for the same and skip reading the entry
-				if (!fdor_next(fdor)) {
+				// received exec array cannot be empty
+				result = FDO_SI_CONTENT_ERROR;
+				goto end;
+			}
+
+			if (!fdor_start_array(fdor)) {
 #ifdef DEBUG_LOGS
-					printf("Module fdo_sys - Failed to read fdo_sys:fetch\n");
+				printf("Module fdo_sys - Failed to start fdo_sys:fetch array\n");
+#endif
+				goto end;
+			}
+
+			// allocate memory for fetch_instr
+			fetch_instr = (char**)ModuleAlloc(sizeof(char*) * (fetch_array_length + 1));
+			if (!fetch_instr) {
+#ifdef DEBUG_LOGS
+				printf("Module fdo_sys - Failed to alloc for fdo_sys:fetch instructions\n");
+#endif
+				goto end;
+			}
+
+			for (fetch_array_index = 0; fetch_array_index < fetch_array_length; fetch_array_index++) {
+				fetch_instr[fetch_array_index] =
+					(char *)ModuleAlloc(sizeof(char) * MOD_MAX_FETCH_ARG_LEN);
+				if (!fetch_instr[fetch_array_index]) {
+#ifdef DEBUG_LOGS
+					printf("Module fdo_sys - Failed to alloc for single fdo_sys:fetch"
+						" instruction\n");
 #endif
 					goto end;
 				}
-				return FDO_SI_CONTENT_ERROR;
-			}
-
-			if (memset_s(filename, sizeof(filename), 0) != 0) {
+				if (0 != memset_s(fetch_instr[fetch_array_index],
+					sizeof(sizeof(char) * MOD_MAX_FETCH_ARG_LEN), 0)) {
 #ifdef DEBUG_LOGS
-				printf("Module fdo_sys - Failed to clear fdo_sys:fetch filename buffer\n");
+					printf("Module fdo_sys -  Failed to clear single fdo_sys:fetch"
+					" instruction\n");
 #endif
-				goto end;
-			}
-
-			if (!fdor_text_string(fdor, &filename[0], bin_len)) {
+					goto end;
+				}
+				if (!fdor_string_length(fdor, &fetch_instructions_sz) ||
+						fetch_instructions_sz > MOD_MAX_FETCH_ARG_LEN) {
 #ifdef DEBUG_LOGS
-				printf("Module fdo_sys - Failed to read value for fdo_sys:fetch\n");
+					printf("Module fdo_sys - Failed to read fdo_sys:fetch text length\n");
 #endif
-				goto end;
+					goto end;
+				}
+				if (!fdor_text_string(fdor, fetch_instr[fetch_array_index], fetch_instructions_sz)) {
+#ifdef DEBUG_LOGS
+					printf("Module fdo_sys - Failed to read fdo_sys:fetch text\n");
+#endif
+					goto end;
+				}
+
+				// 1st argument is the filename
+				if (fetch_array_index == 0) {
+					if (memset_s(filename, sizeof(filename), 0) != 0) {
+#ifdef DEBUG_LOGS
+						printf("Module fdo_sys - Failed to clear filename for"
+							" fdo_sys:fetch\n");
+#endif
+						goto end;
+					}
+					if (0 != strncpy_s(filename, FILE_NAME_LEN,
+						fetch_instr[fetch_array_index], fetch_instructions_sz)) {
+#ifdef DEBUG_LOGS
+						printf("Module fdo_sys - Failed to copy filename for"
+							" fdo_sys:fetch\n");
+#endif
+						goto end;
+					}
+				}
+
+				// 2nd argument is SVI map key
+				if (fetch_array_index == 1) {
+					if (memset_s(svi_map_key, SVI_MAP_KEY_LEN, 0) != 0) {
+#ifdef DEBUG_LOGS
+						printf("Module fdo_sys - Failed to clear filename for"
+							" fdo_sys:exec/exec_cb\n");
+#endif
+						goto end;
+					}
+
+					if (0 != strncpy_s(svi_map_key, SVI_MAP_KEY_LEN,
+						fetch_instr[fetch_array_index], fetch_instructions_sz)) {
+#ifdef DEBUG_LOGS
+						printf("Module fdo_sys - Failed to copy svi map key for"
+							" fdo_sys:exec/exec_cb\n");
+#endif
+						goto end;
+					}
+				}
 			}
 
 			// set the file size here so that we don't read any more than what we initially saw
@@ -722,6 +823,15 @@ end:
 		ModuleFree(exec_instr);
 		exec_array_length = 0;
 	}
+	if (fetch_instr && fetch_array_length > 0) {
+		int fetch_counter = fetch_array_length - 1;
+		while (fetch_counter >= 0) {
+			ModuleFree(fetch_instr[fetch_counter]);
+			--fetch_counter;
+		}
+		ModuleFree(fetch_instr);
+		fetch_array_length = 0;
+	}
 	if (result != FDO_SI_SUCCESS) {
 		// clean-up state variables/objects
 		hasmore = false;
@@ -737,6 +847,8 @@ end:
  * Write CBOR-encoded fdo_sys:status_cb content into FDOW.
  */
 static bool write_status_cb(char *module_message) {
+
+	printf("Writing status_cb after exec_cb.....\n\n");
 
 	if (!module_message) {
 #ifdef DEBUG_LOGS
@@ -754,13 +866,14 @@ static bool write_status_cb(char *module_message) {
 		return false;
 	}
 
-	if (!fdow_start_array(fdow, 3)) {
+	if (!fdow_start_array(fdow, 5)) {
 #ifdef DEBUG_LOGS
 		printf("Module fdo_sys - Failed to start inner fdo_sys:status_cb array\n");
 #endif
 		return false;
 	}
 
+	printf("status complete code: %d\n", status_cb_iscomplete);
 	if (!fdow_boolean(fdow, status_cb_iscomplete)) {
 #ifdef DEBUG_LOGS
 		printf("Module fdo_sys - Failed to write fdo_sys:status_cb isComplete\n");
@@ -768,6 +881,7 @@ static bool write_status_cb(char *module_message) {
 		return false;
 	}
 
+	printf("status result code: %d\n", status_cb_resultcode);
 	if (!fdow_signed_int(fdow, status_cb_resultcode)) {
 #ifdef DEBUG_LOGS
 		printf("Module fdo_sys - Failed to write fdo_sys:status_cb resultCode\n");
@@ -775,9 +889,26 @@ static bool write_status_cb(char *module_message) {
 		return false;
 	}
 
+	printf("status wait: %ld\n", status_cb_waitsec);
 	if (!fdow_unsigned_int(fdow, status_cb_waitsec)) {
 #ifdef DEBUG_LOGS
 		printf("Module fdo_sys - Failed to write fdo_sys:status_cb waitSec\n");
+#endif
+		return false;
+	}
+
+	printf("\nexecution result: %s\n", exec_result);
+	if (!fdow_text_string(fdow, exec_result, strnlen_s(exec_result, sizeof exec_result))) {
+#ifdef DEBUG_LOGS
+		printf("Module fdo_sys - Failed to write fdo_sys:status_cb exec_result\n");
+#endif
+		return false;
+	}
+
+	printf("\nsvi map key=%s\n", svi_map_key);
+	if (!fdow_text_string(fdow, svi_map_key, strnlen_s(svi_map_key, sizeof svi_map_key))) {
+#ifdef DEBUG_LOGS
+		printf("Module fdo_sys - Failed to write fdo_sys:status_cb svi_map_key\n");
 #endif
 		return false;
 	}
@@ -814,9 +945,23 @@ static bool write_data(char *module_message,
 		return false;
 	}
 
+	if (!fdow_start_array(fdow, 2)) {
+#ifdef DEBUG_LOGS
+		printf("Module fdo_sys - Failed to start inner fdo_sys:status_cb array\n");
+#endif
+		return false;
+	}
+
 	if (!fdow_byte_string(fdow, bin_data, bin_len)) {
 #ifdef DEBUG_LOGS
 		printf("Module fdo_sys - Failed to write fdo_sys:data content\n");
+#endif
+		return false;
+	}
+
+	if (!fdow_text_string(fdow, svi_map_key, strnlen_s(svi_map_key, SVI_MAP_KEY_LEN))) {
+#ifdef DEBUG_LOGS
+		printf("Module fdo_sys - Failed to write fdo_sys:data svimapkey\n");
 #endif
 		return false;
 	}

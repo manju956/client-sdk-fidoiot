@@ -40,7 +40,8 @@ void *ModuleAlloc(int size);
 bool process_data(fdoSysModMsg type, uint8_t *data, uint32_t dataLen,
 		  char *file_name, char **command,
 		  bool *status_iscomplete, int *status_resultcode,
-		  uint64_t *status_waitsec);
+		  uint64_t *status_waitsec,
+		  char* exec_result);
 
 size_t get_file_sz(char const *filename);
 bool read_buffer_from_file_from_pos(const char *filename, uint8_t *buffer, size_t size, int from);

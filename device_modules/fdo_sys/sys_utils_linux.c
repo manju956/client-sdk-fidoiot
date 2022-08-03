@@ -114,7 +114,7 @@ end:
 
 bool process_data(fdoSysModMsg type, uint8_t *data, uint32_t data_len,
 		  char *file_name, char **command, bool *status_iscomplete, int *status_resultcode,
-		  uint64_t *status_waitsec)
+		  uint64_t *status_waitsec, char* exec_result)
 {
 	bool ret = false;
 	FILE *fp = NULL;
@@ -182,6 +182,14 @@ bool process_data(fdoSysModMsg type, uint8_t *data, uint32_t data_len,
 		}
 
 		printf("fdo_sys exec : Executing command...\n");
+
+		// pipes
+		int filedes[2];
+		if (pipe(filedes) == -1) {
+			perror("pipe");
+			return false;
+		}
+
 		exec_pid = fork();
 		if (exec_pid < 0) {
 			// error
@@ -191,12 +199,26 @@ bool process_data(fdoSysModMsg type, uint8_t *data, uint32_t data_len,
 			return false;
 		} else if (exec_pid == 0) {
 			// child process
-			status = execv(command[0], command);
-			if (status == -1) {
+			if (type == FDO_SYS_MOD_MSG_EXEC) {
+				status = execv(command[0], command);
+				if (status == -1) {
 #ifdef DEBUG_LOGS
-				printf("fdo_sys exec : Failed to execute command.\n");
+					printf("fdo_sys exec : Failed to execute command.\n");
 #endif
-				goto end;
+					goto end;
+				}
+			} else if (type == FDO_SYS_MOD_MSG_EXEC_CB) {
+				// redirect execv stdout to pipe to store result in parent process
+				close(1);
+				dup2(filedes[1], 1);
+				close(filedes[0]);
+				status = execv(command[0], command);
+				if (status == -1) {
+#ifdef DEBUG_LOGS
+					printf("fdo_sys exec : Failed to execute command.\n");
+#endif
+					goto end;
+				}
 			}
 		} else {
 			// parent process
@@ -220,6 +242,27 @@ bool process_data(fdoSysModMsg type, uint8_t *data, uint32_t data_len,
 						goto end;
 					}
 				}
+			} else if (type == FDO_SYS_MOD_MSG_EXEC_CB) {
+				close(filedes[1]);
+				// read shell execution output from pipe stream
+				size_t count = read(filedes[0], exec_result, EXEC_RESULT_LEN);
+				if (count < 0) {
+#ifdef DEBUG_LOGS
+					printf("fdo_sys exec : Failed to read command execution output.\n");
+#endif
+					goto end;
+				}
+				exec_result[count] = '\0';
+#ifdef DEBUG_LOGS
+				printf("read bytes from cmd execution: %ld\n", count);
+				printf("execution output: %s\n", exec_result);
+#endif
+
+				*status_iscomplete = true;
+				*status_resultcode = 0;
+				*status_waitsec = 0;
+				ret = true;
+				goto end;
 			} else {
 				if (!status_iscomplete || !status_resultcode || !status_waitsec) {
 #ifdef DEBUG_LOGS

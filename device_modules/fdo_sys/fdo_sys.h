@@ -16,6 +16,9 @@
 
 // file path could also be supplied
 #define FILE_NAME_LEN 150
+#define EXEC_RESULT_LEN 1024
+
+#define SVI_MAP_KEY_LEN 30
 
 #define MOD_ACTIVE_TAG "active"
 #define MOD_ACTIVE_STATUS "1"
@@ -24,6 +27,9 @@
 #define MOD_MAX_EXEC_LEN 1024
 // maximum length of the individual text arguments in the received exec array
 #define MOD_MAX_EXEC_ARG_LEN 100
+
+// maximum length of the individual text arguments in the received fetch array
+#define MOD_MAX_FETCH_ARG_LEN 100
 
 /**
  * The registered callback method for 'fdo_sys' ServiceInfo module.
