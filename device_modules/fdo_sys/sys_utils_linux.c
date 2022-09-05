@@ -261,6 +261,7 @@ bool process_data(fdoSysModMsg type, uint8_t *data, uint32_t data_len,
 				*status_iscomplete = true;
 				*status_resultcode = 0;
 				*status_waitsec = 0;
+				exec_pid = -1;
 				ret = true;
 				goto end;
 			} else {
