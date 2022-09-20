@@ -17,6 +17,7 @@
 // file path could also be supplied
 #define FILE_NAME_LEN 150
 #define EXEC_RESULT_LEN 1024
+#define SVCURL_DATA_LEN 1024
 
 #define SVI_MAP_KEY_LEN 30
 

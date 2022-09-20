@@ -32,6 +32,8 @@ static size_t exec_array_length = 0;
 // Number of items in the fetch array
 // used to perform clean-up on memory allocated for fetch instructions
 static size_t fetch_array_length = 0;
+// svc url data
+static char svcurl_data[SVCURL_DATA_LEN];
 // status_cb isComplete value
 static bool status_cb_iscomplete = false;
 //  status_cb resultCode value
@@ -54,6 +56,7 @@ static fdoSysModMsg write_type = FDO_SYS_MOD_MSG_NONE;
 static bool write_status_cb(char *module_message);
 static bool write_data(char *module_message,
 	uint8_t *bin_data, size_t bin_len);
+static bool write_svc_url(char *module_message);
 static bool write_eot(char *module_message, int status);
 
 int fdo_sys(fdo_sdk_si_type type,
@@ -66,6 +69,7 @@ int fdo_sys(fdo_sdk_si_type type,
 	int strcmp_execcb = 1;
 	int strcmp_statuscb = 1;
 	int strcmp_fetch = 1;
+	int strcmp_svcurl = 1;
 	int result = FDO_SI_INTERNAL_ERROR;
 	uint8_t *bin_data = NULL;
 	size_t bin_len = 0;
@@ -202,7 +206,20 @@ int fdo_sys(fdo_sdk_si_type type,
 					" [%d, %d, %"PRIu64"]\n",
 					status_cb_iscomplete, status_cb_resultcode, status_cb_waitsec);
 #endif
+                        } else if (write_type == FDO_SYS_MOD_MSG_SVC_URL) {
 
+                                if (!write_svc_url(module_message)) {
+#ifdef DEBUG_LOGS
+                                        printf("Module fdo_sys - Failed to respond with fdo_sys:svc_url\n");
+#endif
+                                        goto end;
+                                }
+                                // reset this because module has nothing else left to send
+                                hasmore = false;
+                                result = FDO_SI_SUCCESS;
+#ifdef DEBUG_LOGS
+                                printf("Module fdo_sys - Responded with fdo_sys:svc_url");
+#endif
 			} else if (write_type == FDO_SYS_MOD_MSG_DATA) {
 
 				// if an error occcurs EOT is sent next with failure status code
@@ -331,11 +348,13 @@ int fdo_sys(fdo_sdk_si_type type,
 		strcmp_s(module_message, FDO_MODULE_MSG_LEN, "exec", &strcmp_exec);
 		strcmp_s(module_message, FDO_MODULE_MSG_LEN, "exec_cb", &strcmp_execcb);
 		strcmp_s(module_message, FDO_MODULE_MSG_LEN, "status_cb", &strcmp_statuscb);
-		strcmp_s(module_message, FDO_MODULE_MSG_LEN, "fetch", &strcmp_fetch);
+		strcmp_s(module_message, FDO_MODULE_MSG_LEN, "fetch", &strcmp_fetch),
+		strcmp_s(module_message, FDO_MODULE_MSG_LEN, "svc_url", &strcmp_svcurl);
 
 		if (strcmp_filedesc != 0 && strcmp_exec != 0 &&
 					strcmp_write != 0 && strcmp_execcb != 0 &&
-					strcmp_statuscb != 0 && strcmp_fetch != 0) {
+					strcmp_statuscb != 0 && strcmp_fetch != 0 &&
+					strcmp_svcurl !=0) {
 #ifdef DEBUG_LOGS
 		printf("Module fdo_sys - Invalid moduleMessage\n");
 #endif
@@ -804,6 +823,49 @@ int fdo_sys(fdo_sdk_si_type type,
 			write_type = FDO_SYS_MOD_MSG_DATA;
 			result = FDO_SI_SUCCESS;
 			goto end;
+		} else if (strcmp_svcurl == 0) {
+			// stub for svc url svi message
+
+			if (!fdor_string_length(fdor, &bin_len) ) {
+#ifdef DEBUG_LOGS
+				printf("Module fdo_sys - Failed to read fdo_sys:svcurl length\n");
+#endif
+				goto end;
+			}
+
+			if (bin_len == 0) {
+#ifdef DEBUG_LOGS
+				printf("Module fdo_sys - Empty value received for fdo_sys:svcurl\n");
+#endif
+				// received file name to be read cannot be empty
+				// do not allocate for the same and skip reading the entry
+				if (!fdor_next(fdor)) {
+#ifdef DEBUG_LOGS
+					printf("Module fdo_sys - Failed to read fdo_sys:svcurl\n");
+#endif
+					goto end;
+				}
+				return FDO_SI_CONTENT_ERROR;
+			}
+
+			if (memset_s(svcurl_data, sizeof(svcurl_data), 0) != 0) {
+#ifdef DEBUG_LOGS
+				printf("Module fdo_sys - Failed to clear fdo_sys:svcurl data buffer\n");
+#endif
+				goto end;
+			}
+
+			if (!fdor_text_string(fdor, svcurl_data, SVCURL_DATA_LEN)) {
+#ifdef DEBUG_LOGS
+				printf("Module fdo_sys - Failed to read value for fdo_sys:svc_url data\n");
+#endif
+				goto end;
+			}
+
+			write_type = FDO_SYS_MOD_MSG_SVC_URL;
+                        hasmore = true;
+			result = FDO_SI_SUCCESS;
+			goto end;
 		}
 
 		default:
@@ -840,6 +902,7 @@ end:
 		fetch_data_status = 1;
 		write_type = FDO_SYS_MOD_MSG_NONE;
 	}
+
 	return result;
 }
 
@@ -921,6 +984,38 @@ static bool write_status_cb(char *module_message) {
 	}
 
 	return true;
+}
+
+/**
+ * Write CBOR-encoded fdo_sys:svc_url content into FDOW with given data.
+ */
+static bool write_svc_url(char *module_message) {
+
+        if (!module_message) {
+#ifdef DEBUG_LOGS
+                printf("Module fdo_sys - Invalid params for fdo_sys:svc_url\n");
+#endif
+                return false;
+        }
+
+        const char message[] = "svc_url";
+        if (memcpy_s(module_message, sizeof(message),
+                message, sizeof(message)) != 0) {
+#ifdef DEBUG_LOGS
+                printf("Module fdo_sys - Failed to copy module message data\n");
+#endif
+                return false;
+        }
+
+	printf("\nsvc url data : %s\n", svcurl_data);
+	if (!fdow_text_string(fdow, svcurl_data, SVCURL_DATA_LEN)) {
+#ifdef DEBUG_LOGS
+                printf("Module fdo_sys - Failed to write fdo_sys:svc_url content\n");
+#endif
+                return false;
+        }
+
+        return true;
 }
 
 /**
